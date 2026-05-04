@@ -41,7 +41,7 @@ def sigmoid(x):
 
 @st.cache_data
 def load_data(start, end):
-    df = statcast_batter(start, end)
+   df = statcast_batter(start.strftime("%Y-%m-%d"), end.strftime("%Y-%m-%d"))
 
     df["is_hr"] = (df["events"] == "home_run").astype(int)
 
