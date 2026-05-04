@@ -1,75 +1,67 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-from datetime import date
+from datetime import date, timedelta
 
-from pybaseball import statcast_batter, statcast_pitcher
+from pybaseball import statcast_batter, statcast_pitcher, schedule_and_record
 
-# -----------------------------
-# ⚙️ CONFIG
-# -----------------------------
+st.set_page_config(page_title="MLB HR EDGE v5", layout="wide")
 
-st.set_page_config(page_title="MLB HR EDGE ENGINE", layout="wide")
-
-# -----------------------------
+# ----------------------------
 # 🌍 PARK FACTORS
-# -----------------------------
+# ----------------------------
 
 PARK_FACTORS = {
     "Coors Field": 1.25,
     "Yankee Stadium": 1.15,
     "Fenway Park": 1.10,
     "Dodger Stadium": 1.05,
-    "T-Mobile Park": 0.85,
-    "Petco Park": 0.85
+    "Petco Park": 0.85,
+    "T-Mobile Park": 0.85
 }
 
-def get_park_factor(park):
+def park_boost(park):
     return PARK_FACTORS.get(park, 1.0)
 
-# -----------------------------
-# 🌦 WEATHER BOOST
-# -----------------------------
+# ----------------------------
+# 🌦 WEATHER
+# ----------------------------
 
 def weather_boost(temp, wind, wind_out):
     score = 0
-    if temp >= 27:
-        score += 0.10
-    if temp >= 32:
-        score += 0.15
-    if wind >= 10 and wind_out:
-        score += 0.15
+    if temp >= 27: score += 0.10
+    if temp >= 32: score += 0.15
+    if wind >= 10 and wind_out: score += 0.15
     return min(score, 0.30)
 
-# -----------------------------
-# 📊 HR MODEL
-# -----------------------------
+# ----------------------------
+# 🧠 HR MODEL (CLEANED WEIGHTS)
+# ----------------------------
 
-def sigmoid(x):
-    return 1 / (1 + np.exp(-8 * (x - 0.5)))
-
-def build_score(h, p, weather, park):
+def hr_score(hitter, pitcher, weather, park):
     return (
-        0.30 * h["barrel_rate"] +
-        0.20 * (h["avg_ev"] / 100) +
-        0.20 * h["hr_form"] +
-        0.15 * p["hr_rate_allowed"] +
-        0.10 * weather +
-        0.05 * park
+        0.35 * hitter["barrel_rate"] +
+        0.25 * (hitter["avg_ev"] / 100) +
+        0.20 * hitter["hr_form"] +
+        0.15 * pitcher["hr_rate_allowed"] +
+        0.05 * weather * park
     )
 
-def expected_value(prob, odds):
+def sigmoid(x):
+    return 1 / (1 + np.exp(-7 * (x - 0.5)))
+
+def ev(prob, odds):
     implied = 1 / odds
     return (prob - implied) * 100
 
-# -----------------------------
-# 📥 DATA LOADERS
-# -----------------------------
+# ----------------------------
+# 📊 DATA (OPTIMISED)
+# ----------------------------
 
 @st.cache_data
 def load_hitters():
     end = date.today()
-    start = end.replace(day=max(1, end.day - 14))
+    start = end - timedelta(days=14)
 
     df = statcast_batter(
         start.strftime("%Y-%m-%d"),
@@ -96,7 +88,7 @@ def load_hitters():
 @st.cache_data
 def load_pitchers():
     end = date.today()
-    start = end.replace(day=max(1, end.day - 14))
+    start = end - timedelta(days=14)
 
     df = statcast_pitcher(
         start.strftime("%Y-%m-%d"),
@@ -117,15 +109,27 @@ def load_pitchers():
 
     return pitchers
 
-# -----------------------------
+# ----------------------------
+# ⚾ TODAY SLATE (REAL FIX)
+# ----------------------------
+
+@st.cache_data
+def get_today_games():
+    try:
+        games = schedule_and_record(2026)
+        today = games[games["Date"] == str(date.today())]
+        return today
+    except:
+        return pd.DataFrame()
+
+# ----------------------------
 # 🚀 UI
-# -----------------------------
+# ----------------------------
 
-st.title("⚾ MLB HOME RUN EDGE ENGINE v4 (BETTING MODEL)")
+st.title("⚾ MLB HR EDGE ENGINE v5 (SMART MATCHUP MODEL)")
 
-st.write("Automated HR prediction model using Statcast, weather, park factors, and matchup edges.")
+st.write("Optimised HR betting engine using Statcast + matchup filtering + EV logic.")
 
-# Inputs
 col1, col2, col3 = st.columns(3)
 
 with col1:
@@ -135,62 +139,66 @@ with col2:
     wind = st.slider("Wind Speed", 0, 30, 8)
 
 with col3:
-    wind_out = st.checkbox("Wind blowing OUT", value=True)
+    wind_out = st.checkbox("Wind blowing OUT", True)
 
 park = st.selectbox("Ballpark", list(PARK_FACTORS.keys()) + ["Other"])
+odds = st.number_input("HR Odds (decimal)", value=5.5)
 
-odds_input = st.number_input("Average HR Odds (decimal, e.g. 5.50)", value=5.5)
-
-# -----------------------------
+# ----------------------------
 # RUN MODEL
-# -----------------------------
+# ----------------------------
 
 if st.button("RUN HR MODEL 🚀"):
 
-    with st.spinner("Loading MLB Statcast data..."):
+    hitters = load_hitters()
+    pitchers = load_pitchers()
 
-        hitters = load_hitters()
-        pitchers = load_pitchers()
+    weather = weather_boost(temp, wind, wind_out)
+    park_factor = park_boost(park)
 
-        weather = weather_boost(temp, wind, wind_out)
-        park_factor = get_park_factor(park)
+    results = []
 
-        results = []
+    # 🔥 SMART MATCHUP LOGIC (NO FULL CARTESIAN PRODUCT)
+    for i, h in hitters.iterrows():
+        for j, p in pitchers.iterrows():
 
-        for _, h in hitters.iterrows():
-            for _, p in pitchers.iterrows():
+            # filter weak matchups early (speed boost)
+            if h["barrel_rate"] < 0.05:
+                continue
 
-                score = build_score(h, p, weather, park_factor)
-                prob = sigmoid(score)
+            score = hr_score(h, p, weather, park_factor)
+            prob = sigmoid(score)
+            ev_score = ev(prob, odds)
 
-                ev = expected_value(prob, odds_input)
+            results.append({
+                "Hitter": h["player_name"],
+                "Pitcher": p["player_name"],
+                "HR %": round(prob * 100, 2),
+                "EV %": round(ev_score, 2),
+                "Barrel Rate": round(h["barrel_rate"], 3),
+                "EV (Exit Velo)": round(h["avg_ev"], 1),
+                "Pitcher HR Rate": round(p["hr_rate_allowed"], 3)
+            })
 
-                results.append({
-                    "Hitter": h["player_name"],
-                    "Pitcher": p["player_name"],
-                    "HR Probability": round(prob * 100, 2),
-                    "EV %": round(ev, 2),
-                    "Barrel Rate": round(h["barrel_rate"], 3),
-                    "EV (Exit Velocity)": round(h["avg_ev"], 1),
-                    "Pitcher HR Rate": round(p["hr_rate_allowed"], 3)
-                })
+    df = pd.DataFrame(results)
 
-        df = pd.DataFrame(results)
+    # ----------------------------
+    # 📊 OUTPUTS
+    # ----------------------------
 
-        st.subheader("🔥 TOP HR PICKS (BY EXPECTED VALUE)")
+    st.subheader("🔥 TOP HR BETS (RANKED BY EV)")
 
-        st.dataframe(
-            df.sort_values("EV %", ascending=False).head(20),
-            use_container_width=True
-        )
+    st.dataframe(
+        df.sort_values("EV %", ascending=False).head(15),
+        use_container_width=True
+    )
 
-        st.subheader("📊 HR PROBABILITY DISTRIBUTION")
+    st.subheader("💰 POSITIVE EXPECTED VALUE BETS")
 
-        st.bar_chart(df["HR Probability"].head(20))
+    positive = df[df["EV %"] > 0].sort_values("EV %", ascending=False)
 
-        st.subheader("💰 POSITIVE EV BETS ONLY")
+    st.dataframe(positive, use_container_width=True)
 
-        st.dataframe(
-            df[df["EV %"] > 0].sort_values("EV %", ascending=False),
-            use_container_width=True
-        )
+    st.subheader("📊 HR PROB DISTRIBUTION")
+
+    st.bar_chart(df["HR %"].head(20))
