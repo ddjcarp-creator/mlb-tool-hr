@@ -133,3 +133,9 @@ if st.button("RUN HR MODEL 🚀"):
         st.subheader("📊 HR DISTRIBUTION")
 
         st.bar_chart(df["HR Probability"].head(20))
+from pybaseball import schedule_and_record
+
+def get_todays_games():
+    games = schedule_and_record(2026)
+    today = games[games["Date"] == str(date.today())]
+    return today
